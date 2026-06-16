@@ -1,0 +1,97 @@
+name: Build Terminal Extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_toolchain:
+        description: "Refresh bundled toolchain prebuilt before building"
+        required: false
+        default: false
+        type: boolean
+      toolchain_version:
+        description: "Bundled toolchain version label"
+        required: false
+        default: ""
+        type: string
+      app_version_name:
+        description: "App version name override"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "gradle/**"
+      - "gradlew"
+      - "gradlew.bat"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "scripts/**"
+      - "toolchain/**"
+      - ".github/workflows/build-extension.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Refresh bundled toolchain prebuilt
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
+        run: |
+          ./gradlew --no-configuration-cache \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_TIMEOUT=60 \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_RETRIES=4 \
+            :app:refreshBundledToolchainPrebuilt
+
+      - name: Upload refreshed prebuilt toolchain
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: murong-terminal-extension-prebuilt
+          path: toolchain/prebuilt/arm64-v8a/**
+
+      - name: Build release from bundled toolchain prebuilt
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          TOOLCHAIN_VERSION="${{ inputs.toolchain_version }}"
+          if [ -z "$TOOLCHAIN_VERSION" ]; then
+            TOOLCHAIN_VERSION="termux-curated-${{ github.run_number }}"
+          fi
+          APP_VERSION_NAME="${{ inputs.app_version_name }}"
+          GRADLE_ARGS=(
+            "-PBUNDLED_TOOLCHAIN_VERSION=${TOOLCHAIN_VERSION}"
+          )
+          if [ -n "$APP_VERSION_NAME" ]; then
+            GRADLE_ARGS+=("-PAPP_VERSION_NAME=${APP_VERSION_NAME}")
+          fi
+          ./gradlew --no-configuration-cache \
+            "${GRADLE_ARGS[@]}" \
+            :app:assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: murong-terminal-extension-release
+          path: app/build/outputs/apk/release/*.apk

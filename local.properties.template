@@ -1,0 +1,5 @@
+# Copy this file to local.properties for local builds.
+sdk.dir=C:\\Users\\Administrator\\AppData\\Local\\Android\\Sdk
+# Optional signing values for local release builds:
+# storePassword=
+# keyPassword=

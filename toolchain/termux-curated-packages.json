@@ -1,0 +1,40 @@
+{
+  "repoIndexUrl": "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages",
+  "packageBaseUrl": "https://packages.termux.dev/apt/termux-main/",
+  "rootPrefix": "data/data/com.termux/files/usr/",
+  "excludeGlobs": [
+    "share/man/*",
+    "share/doc/*",
+    "share/info/*",
+    "var/cache/*",
+    "include/*",
+    "lib/pkgconfig/*",
+    "lib/cmake/*",
+    "libexec/installed-tests/*",
+    "share/aclocal/*",
+    "share/bash-completion/*",
+    "share/examples/*",
+    "share/fish/*",
+    "share/gitweb/*",
+    "share/zsh/*"
+  ],
+  "topLevelPackages": [
+    "bash",
+    "coreutils",
+    "curl",
+    "diffutils",
+    "findutils",
+    "gawk",
+    "git",
+    "grep",
+    "less",
+    "openssl-tool",
+    "procps",
+    "ripgrep",
+    "sed",
+    "tar",
+    "which",
+    "xz-utils",
+    "zstd"
+  ]
+}
