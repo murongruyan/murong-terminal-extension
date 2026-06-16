@@ -1,5 +1,8 @@
 name: Build Terminal Extension
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +18,21 @@ on:
         type: string
       app_version_name:
         description: "App version name override"
+        required: false
+        default: ""
+        type: string
+      app_version_code:
+        description: "App version code override"
+        required: false
+        default: ""
+        type: string
+      release_tag:
+        description: "GitHub Release tag, defaults to murong-terminal-extension-v<version>"
+        required: false
+        default: ""
+        type: string
+      release_name:
+        description: "GitHub Release title, defaults to Murong Terminal Extension <version> (<code>)"
         required: false
         default: ""
         type: string
@@ -54,6 +72,60 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
+      - name: Prepare release metadata
+        shell: bash
+        env:
+          INPUT_TOOLCHAIN_VERSION: ${{ github.event.inputs.toolchain_version }}
+          INPUT_APP_VERSION_NAME: ${{ github.event.inputs.app_version_name }}
+          INPUT_APP_VERSION_CODE: ${{ github.event.inputs.app_version_code }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_RELEASE_NAME: ${{ github.event.inputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          read_gradle_default() {
+            local key="$1"
+            python3 -c 'import pathlib,re,sys; key=sys.argv[1]; text=pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8"); patterns={"versionName":[r"val\s+appVersionName\s*=.*?\?:\s*\"([^\"]+)\"", r"versionName\s*=\s*\"([^\"]+)\""], "versionCode":[r"val\s+appVersionCode\s*=.*?\?:\s*([0-9]+)", r"versionCode\s*=\s*([0-9]+)"]}; match=next((m for pattern in patterns[key] for m in [re.search(pattern, text, re.S)] if m), None); print(match.group(1)) if match else (print(f"Failed to read default {key}", file=sys.stderr), sys.exit(1))' "${key}"
+          }
+
+          DEFAULT_APP_VERSION_NAME="$(read_gradle_default versionName)"
+          DEFAULT_APP_VERSION_CODE="$(read_gradle_default versionCode)"
+
+          TOOLCHAIN_VERSION="${INPUT_TOOLCHAIN_VERSION:-}"
+          if [[ -z "${TOOLCHAIN_VERSION}" ]]; then
+            TOOLCHAIN_VERSION="termux-curated-${{ github.run_number }}"
+          fi
+
+          APP_VERSION_NAME="${INPUT_APP_VERSION_NAME:-${DEFAULT_APP_VERSION_NAME}}"
+          APP_VERSION_CODE="${INPUT_APP_VERSION_CODE:-${DEFAULT_APP_VERSION_CODE}}"
+
+          if [[ -z "${APP_VERSION_NAME}" || -z "${APP_VERSION_CODE}" ]]; then
+            echo "Missing terminal extension version metadata." >&2
+            exit 1
+          fi
+
+          if [[ ! "${APP_VERSION_CODE}" =~ ^[0-9]+$ ]]; then
+            echo "Invalid app version code: ${APP_VERSION_CODE}" >&2
+            exit 1
+          fi
+
+          RELEASE_TAG="${INPUT_RELEASE_TAG:-murong-terminal-extension-v${APP_VERSION_NAME}}"
+          RELEASE_NAME="${INPUT_RELEASE_NAME:-Murong Terminal Extension ${APP_VERSION_NAME} (${APP_VERSION_CODE})}"
+          ARTIFACT_BASENAME="murong-terminal-extension-${APP_VERSION_NAME}-${APP_VERSION_CODE}-arm64-v8a"
+          APK_FILE="${ARTIFACT_BASENAME}.apk"
+          PREBUILT_ARTIFACT_NAME="murong-terminal-extension-prebuilt-${TOOLCHAIN_VERSION}-arm64-v8a"
+
+          {
+            echo "TOOLCHAIN_VERSION=${TOOLCHAIN_VERSION}"
+            echo "APP_VERSION_NAME=${APP_VERSION_NAME}"
+            echo "APP_VERSION_CODE=${APP_VERSION_CODE}"
+            echo "RELEASE_TAG=${RELEASE_TAG}"
+            echo "RELEASE_NAME=${RELEASE_NAME}"
+            echo "ARTIFACT_BASENAME=${ARTIFACT_BASENAME}"
+            echo "APK_FILE=${APK_FILE}"
+            echo "PREBUILT_ARTIFACT_NAME=${PREBUILT_ARTIFACT_NAME}"
+          } >> "${GITHUB_ENV}"
+
       - name: Refresh bundled toolchain prebuilt
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
         run: |
@@ -66,7 +138,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
         uses: actions/upload-artifact@v4
         with:
-          name: murong-terminal-extension-prebuilt
+          name: ${{ env.PREBUILT_ARTIFACT_NAME }}
           path: toolchain/prebuilt/arm64-v8a/**
 
       - name: Build release from bundled toolchain prebuilt
@@ -75,23 +147,37 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          TOOLCHAIN_VERSION="${{ inputs.toolchain_version }}"
-          if [ -z "$TOOLCHAIN_VERSION" ]; then
-            TOOLCHAIN_VERSION="termux-curated-${{ github.run_number }}"
-          fi
-          APP_VERSION_NAME="${{ inputs.app_version_name }}"
           GRADLE_ARGS=(
             "-PBUNDLED_TOOLCHAIN_VERSION=${TOOLCHAIN_VERSION}"
+            "-PAPP_VERSION_NAME=${APP_VERSION_NAME}"
+            "-PAPP_VERSION_CODE=${APP_VERSION_CODE}"
           )
-          if [ -n "$APP_VERSION_NAME" ]; then
-            GRADLE_ARGS+=("-PAPP_VERSION_NAME=${APP_VERSION_NAME}")
-          fi
           ./gradlew --no-configuration-cache \
             "${GRADLE_ARGS[@]}" \
             :app:assembleRelease
 
+      - name: Rename release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk "dist/${APK_FILE}"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: murong-terminal-extension-release
-          path: app/build/outputs/apk/release/*.apk
+          name: ${{ env.ARTIFACT_BASENAME }}
+          path: dist/${{ env.APK_FILE }}
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: dist/${{ env.APK_FILE }}
+          makeLatest: true
+          name: ${{ env.RELEASE_NAME }}
+          removeArtifacts: true
+          replacesArtifacts: true
+          tag: ${{ env.RELEASE_TAG }}
