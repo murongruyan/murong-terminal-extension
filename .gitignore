@@ -6,3 +6,5 @@
 /toolchain/prebuilt/
 /toolchain-cache/
 /.dbg/
+__pycache__/
+*.pyc
