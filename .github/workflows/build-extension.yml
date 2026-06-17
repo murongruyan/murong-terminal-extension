@@ -218,12 +218,12 @@ jobs:
           username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
           key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
           port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          script_stop: true
           script: |
             set -e
             mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/extension"
+            mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/extension"
 
-      - name: Upload APK To Murong Site Downloads
+      - name: Upload APK To Murong Site Temp
         if: github.event_name == 'workflow_dispatch'
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -232,8 +232,23 @@ jobs:
           key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
           port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
           source: dist/${{ env.APK_FILE }}
-          target: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/extension/
+          target: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/extension/
           overwrite: true
+
+      - name: Move APK Into Final Downloads Path
+        if: github.event_name == 'workflow_dispatch'
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          script: |
+            set -e
+            ROOT="${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}"
+            APK_FILE="${{ env.APK_FILE }}"
+            cp -f "${ROOT}/tmp/extension/dist/${APK_FILE}" "${ROOT}/extension/${APK_FILE}"
+            rm -rf "${ROOT}/tmp/extension/dist"
 
       - name: Publish Release Metadata To Murong Backend
         if: github.event_name == 'workflow_dispatch'
