@@ -1,4 +1,4 @@
-name: Build Terminal Extension
+name: 构建终端扩展包
 
 permissions:
   contents: write
@@ -7,35 +7,40 @@ on:
   workflow_dispatch:
     inputs:
       refresh_toolchain:
-        description: "Refresh bundled toolchain prebuilt before building"
+        description: "构建前是否刷新内置工具链预构建产物"
         required: false
         default: false
         type: boolean
       toolchain_version:
-        description: "Bundled toolchain version label"
+        description: "内置工具链版本标签"
         required: false
         default: ""
         type: string
       app_version_name:
-        description: "App version name override"
+        description: "扩展包版本名，默认读取 app/build.gradle.kts"
         required: false
         default: ""
         type: string
       app_version_code:
-        description: "App version code override"
+        description: "扩展包版本号，默认读取 app/build.gradle.kts"
         required: false
         default: ""
         type: string
       release_tag:
-        description: "GitHub Release tag, defaults to murong-terminal-extension-v<version>"
+        description: "GitHub Release 标签，默认 murong-terminal-extension-v<version>"
         required: false
         default: ""
         type: string
       release_name:
-        description: "GitHub Release title, defaults to Murong Terminal Extension <version> (<code>)"
+        description: "Release 标题，默认 Murong Terminal Extension <version> (<code>)"
         required: false
         default: ""
         type: string
+      sync_to_server:
+        description: "是否同步上传到服务器并回写后端版本信息"
+        required: false
+        default: true
+        type: boolean
   push:
     branches:
       - main
@@ -211,7 +216,7 @@ jobs:
           tag: ${{ env.RELEASE_TAG }}
 
       - name: Ensure Remote Extension Downloads Directory
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
@@ -224,7 +229,7 @@ jobs:
             mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/extension"
 
       - name: Upload APK To Murong Site Temp
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
@@ -236,7 +241,7 @@ jobs:
           overwrite: true
 
       - name: Move APK Into Final Downloads Path
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
@@ -251,7 +256,7 @@ jobs:
             rm -rf "${ROOT}/tmp/extension/dist"
 
       - name: Publish Release Metadata To Murong Backend
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         shell: bash
         env:
           RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
