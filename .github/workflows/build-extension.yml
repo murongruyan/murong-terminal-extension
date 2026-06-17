@@ -65,16 +65,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload refreshed prebuilt toolchain
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PREBUILT_ARTIFACT_NAME }}
           path: toolchain/prebuilt/arm64-v8a/**
@@ -197,7 +197,7 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT_BASENAME }}
           path: dist/${{ env.APK_FILE }}
@@ -215,45 +215,62 @@ jobs:
           replacesArtifacts: true
           tag: ${{ env.RELEASE_TAG }}
 
+      - name: Prepare Deploy SSH
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_KEY: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_KEY}" > "${HOME}/.ssh/id_ed25519"
+          chmod 600 "${HOME}/.ssh/id_ed25519"
+          touch "${HOME}/.ssh/known_hosts"
+          ssh-keyscan -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" >> "${HOME}/.ssh/known_hosts"
+          chmod 644 "${HOME}/.ssh/known_hosts"
+
       - name: Ensure Remote Extension Downloads Directory
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
-          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          script: |
-            set -e
-            mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/extension"
-            mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/extension"
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
+        run: |
+          set -euo pipefail
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
+            "mkdir -p '${DEPLOY_ROOT}/extension' '${DEPLOY_ROOT}/tmp/extension'"
 
       - name: Upload APK To Murong Site Temp
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
-          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          source: dist/${{ env.APK_FILE }}
-          target: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/extension/
-          overwrite: true
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
+        run: |
+          set -euo pipefail
+          scp -P "${DEPLOY_PORT}" \
+            "dist/${APK_FILE}" \
+            "${DEPLOY_USERNAME}@${DEPLOY_HOST}:${DEPLOY_ROOT}/tmp/extension/${APK_FILE}.uploading"
 
       - name: Move APK Into Final Downloads Path
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
-          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          script: |
-            set -e
-            ROOT="${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}"
-            APK_FILE="${{ env.APK_FILE }}"
-            cp -f "${ROOT}/tmp/extension/dist/${APK_FILE}" "${ROOT}/extension/${APK_FILE}"
-            rm -rf "${ROOT}/tmp/extension/dist"
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
+        run: |
+          set -euo pipefail
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
+            "mv -f '${DEPLOY_ROOT}/tmp/extension/${APK_FILE}.uploading' '${DEPLOY_ROOT}/extension/${APK_FILE}'"
 
       - name: Publish Release Metadata To Murong Backend
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
