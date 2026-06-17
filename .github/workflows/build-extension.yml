@@ -50,6 +50,10 @@ on:
       - "toolchain/**"
       - ".github/workflows/build-extension.yml"
 
+env:
+  ANDROID_PLATFORM_PACKAGE: "platforms;android-37.0"
+  ANDROID_BUILD_TOOLS_VERSION: "37.0.0"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -68,6 +72,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Set Up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android Packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "${ANDROID_PLATFORM_PACKAGE}" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}"
 
       - name: Make Gradle executable
         run: chmod +x ./gradlew
