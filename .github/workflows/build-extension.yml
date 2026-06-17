@@ -163,6 +163,19 @@ jobs:
           mkdir -p dist
           cp app/build/outputs/apk/release/*.apk "dist/${APK_FILE}"
 
+      - name: Collect Release Artifact Metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_SHA256="$(sha256sum "dist/${APK_FILE}" | awk '{print $1}')"
+          APK_SIZE_BYTES="$(stat -c%s "dist/${APK_FILE}")"
+          DOWNLOAD_URL="https://murongagent.rl1.cc/downloads/extension/${APK_FILE}"
+          {
+            echo "APK_SHA256=${APK_SHA256}"
+            echo "APK_SIZE_BYTES=${APK_SIZE_BYTES}"
+            echo "DOWNLOAD_URL=${DOWNLOAD_URL}"
+          } >> "${GITHUB_ENV}"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -181,3 +194,70 @@ jobs:
           removeArtifacts: true
           replacesArtifacts: true
           tag: ${{ env.RELEASE_TAG }}
+
+      - name: Ensure Remote Extension Downloads Directory
+        if: github.event_name == 'workflow_dispatch'
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          script_stop: true
+          script: |
+            set -e
+            mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/extension"
+
+      - name: Upload APK To Murong Site Downloads
+        if: github.event_name == 'workflow_dispatch'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          source: dist/${{ env.APK_FILE }}
+          target: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/extension/
+          overwrite: true
+
+      - name: Publish Release Metadata To Murong Backend
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
+          RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASES_ADMIN_TOKEN}" ]]; then
+            echo "Missing secret: MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2
+            exit 1
+          fi
+
+          PAYLOAD="$(python3 - <<'PY'
+          import json
+          import os
+
+          print(json.dumps({
+              "artifactKey": "murong-terminal-extension",
+              "channel": "stable",
+              "versionName": os.environ["APP_VERSION_NAME"],
+              "versionCode": int(os.environ["APP_VERSION_CODE"]),
+              "fileName": os.environ["APK_FILE"],
+              "downloadUrl": os.environ["DOWNLOAD_URL"],
+              "checksumSha256": os.environ["APK_SHA256"],
+              "changelog": os.environ["RELEASE_NAME"],
+              "updateMessage": f"终端扩展包 {os.environ['APP_VERSION_NAME']} 已可下载。",
+              "fileSize": int(os.environ["APK_SIZE_BYTES"]),
+              "status": "active"
+          }, ensure_ascii=False))
+          PY
+          )"
+
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            --data "${PAYLOAD}" \
+            "${RELEASES_API_URL}?action=create"
