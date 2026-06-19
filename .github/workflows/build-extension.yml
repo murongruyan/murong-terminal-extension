@@ -242,15 +242,7 @@ jobs:
           DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
         run: |
           set -euo pipefail
-          ssh \
-            -i "${HOME}/.ssh/id_ed25519" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=30 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            -p "${DEPLOY_PORT}" \
-            "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
             "mkdir -p '${DEPLOY_ROOT}/extension' '${DEPLOY_ROOT}/tmp/extension'"
 
       - name: Upload APK To Murong Site Temp
@@ -263,14 +255,7 @@ jobs:
           DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
         run: |
           set -euo pipefail
-          scp \
-            -i "${HOME}/.ssh/id_ed25519" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=30 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            -P "${DEPLOY_PORT}" \
+          scp -P "${DEPLOY_PORT}" \
             "dist/${APK_FILE}" \
             "${DEPLOY_USERNAME}@${DEPLOY_HOST}:${DEPLOY_ROOT}/tmp/extension/${APK_FILE}.uploading"
 
@@ -284,15 +269,7 @@ jobs:
           DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
         run: |
           set -euo pipefail
-          ssh \
-            -i "${HOME}/.ssh/id_ed25519" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=30 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            -p "${DEPLOY_PORT}" \
-            "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
             "mv -f '${DEPLOY_ROOT}/tmp/extension/${APK_FILE}.uploading' '${DEPLOY_ROOT}/extension/${APK_FILE}'"
 
       - name: Publish Release Metadata To Murong Backend
