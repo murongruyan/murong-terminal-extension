@@ -37,7 +37,7 @@ on:
         default: ""
         type: string
       sync_to_server:
-        description: "是否同步上传到服务器并回写后端版本信息"
+        description: "是否通过后端 API 上传扩展包并回写版本信息"
         required: false
         default: true
         type: boolean
@@ -189,11 +189,9 @@ jobs:
           set -euo pipefail
           APK_SHA256="$(sha256sum "dist/${APK_FILE}" | awk '{print $1}')"
           APK_SIZE_BYTES="$(stat -c%s "dist/${APK_FILE}")"
-          DOWNLOAD_URL="https://murongagent.rl1.cc/downloads/extension/${APK_FILE}"
           {
             echo "APK_SHA256=${APK_SHA256}"
             echo "APK_SIZE_BYTES=${APK_SIZE_BYTES}"
-            echo "DOWNLOAD_URL=${DOWNLOAD_URL}"
           } >> "${GITHUB_ENV}"
 
       - name: Upload APK
@@ -215,78 +213,49 @@ jobs:
           replacesArtifacts: true
           tag: ${{ env.RELEASE_TAG }}
 
-      - name: Prepare Deploy SSH
+      - name: Upload APK To Murong Backend
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         shell: bash
         env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_KEY: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+          RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
+          RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "${DEPLOY_HOST:-}" || -z "${DEPLOY_PORT:-}" || -z "${DEPLOY_KEY:-}" ]]; then
-            echo "Missing deploy SSH secret: host/port/key" >&2
+          if [[ -z "${RELEASES_ADMIN_TOKEN:-}" ]]; then
+            echo "Missing secret: MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2
             exit 1
           fi
-          mkdir -p "${HOME}/.ssh"
-          chmod 700 "${HOME}/.ssh"
-          printf '%s\n' "${DEPLOY_KEY}" | tr -d '\r' > "${HOME}/.ssh/id_ed25519"
-          chmod 600 "${HOME}/.ssh/id_ed25519"
-          if ! ssh-keygen -y -f "${HOME}/.ssh/id_ed25519" >/dev/null 2>&1; then
-            echo "Invalid deploy private key format." >&2
-            exit 1
-          fi
-          touch "${HOME}/.ssh/known_hosts"
-          if ! ssh-keyscan -T 15 -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" >> "${HOME}/.ssh/known_hosts" 2> "${RUNNER_TEMP}/ssh-keyscan.err"; then
-            echo "ssh-keyscan failed for ${DEPLOY_HOST}:${DEPLOY_PORT}" >&2
-            cat "${RUNNER_TEMP}/ssh-keyscan.err" >&2 || true
-            exit 1
-          fi
-          if [[ ! -s "${HOME}/.ssh/known_hosts" ]]; then
-            echo "ssh-keyscan returned no host keys for ${DEPLOY_HOST}:${DEPLOY_PORT}" >&2
-            exit 1
-          fi
-          chmod 644 "${HOME}/.ssh/known_hosts"
+          RESPONSE="$(curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H "Accept: application/json" \
+            -F "apk_file=@dist/${APK_FILE};type=application/vnd.android.package-archive" \
+            -F "target_name=${APK_FILE}" \
+            -F "version=${APP_VERSION_NAME}" \
+            -F "version_code=${APP_VERSION_CODE}" \
+            "${RELEASES_API_URL}?action=upload")"
+          UPLOAD_RESPONSE="${RESPONSE}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
-      - name: Ensure Remote Extension Downloads Directory
-        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
-        run: |
-          set -euo pipefail
-          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
-            "mkdir -p '${DEPLOY_ROOT}/extension' '${DEPLOY_ROOT}/tmp/extension'"
-
-      - name: Upload APK To Murong Site Temp
-        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
-        run: |
-          set -euo pipefail
-          scp -P "${DEPLOY_PORT}" \
-            "dist/${APK_FILE}" \
-            "${DEPLOY_USERNAME}@${DEPLOY_HOST}:${DEPLOY_ROOT}/tmp/extension/${APK_FILE}.uploading"
-
-      - name: Move APK Into Final Downloads Path
-        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
-        run: |
-          set -euo pipefail
-          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
-            "mv -f '${DEPLOY_ROOT}/tmp/extension/${APK_FILE}.uploading' '${DEPLOY_ROOT}/extension/${APK_FILE}'"
+          response = json.loads(os.environ["UPLOAD_RESPONSE"])
+          if not response.get("success"):
+              raise SystemExit(response.get("message", "upload failed"))
+          data = response.get("data") or {}
+          download_url = data.get("downloadUrl", "").strip()
+          if not download_url:
+              raise SystemExit("upload response missing downloadUrl")
+          env_path = Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as handle:
+              handle.write(f"DOWNLOAD_URL={download_url}\n")
+              if data.get("fileName"):
+                  handle.write(f"APK_FILE={data['fileName']}\n")
+              if data.get("checksumSha256"):
+                  handle.write(f"APK_SHA256={data['checksumSha256']}\n")
+              if data.get("fileSize") is not None:
+                  handle.write(f"APK_SIZE_BYTES={int(data['fileSize'])}\n")
+          PY
 
       - name: Publish Release Metadata To Murong Backend
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
