@@ -225,15 +225,26 @@ jobs:
             echo "Missing secret: MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2
             exit 1
           fi
-          RESPONSE="$(curl --fail --silent --show-error \
+          RESPONSE_FILE="$(mktemp)"
+          HTTP_STATUS="$(curl --silent --show-error \
+            --output "${RESPONSE_FILE}" \
+            --write-out "%{http_code}" \
             -X POST \
             -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
             -H "Accept: application/json" \
+            -F "token=${RELEASES_ADMIN_TOKEN}" \
             -F "apk_file=@dist/${APK_FILE};type=application/vnd.android.package-archive" \
             -F "target_name=${APK_FILE}" \
             -F "version=${APP_VERSION_NAME}" \
             -F "version_code=${APP_VERSION_CODE}" \
             "${RELEASES_API_URL}?action=upload")"
+          RESPONSE="$(cat "${RESPONSE_FILE}")"
+          rm -f "${RESPONSE_FILE}"
+          if [[ "${HTTP_STATUS}" != "200" && "${HTTP_STATUS}" != "201" ]]; then
+            echo "Backend upload failed with HTTP ${HTTP_STATUS}" >&2
+            echo "${RESPONSE}" >&2
+            exit 1
+          fi
           UPLOAD_RESPONSE="${RESPONSE}" python3 - <<'PY'
           import json
           import os
@@ -276,6 +287,7 @@ jobs:
           import os
 
           print(json.dumps({
+              "token": os.environ["RELEASES_ADMIN_TOKEN"],
               "artifactKey": "murong-terminal-extension",
               "channel": "stable",
               "versionName": os.environ["APP_VERSION_NAME"],
@@ -291,10 +303,20 @@ jobs:
           PY
           )"
 
-          curl --fail --silent --show-error \
+          RESPONSE_FILE="$(mktemp)"
+          HTTP_STATUS="$(curl --silent --show-error \
+            --output "${RESPONSE_FILE}" \
+            --write-out "%{http_code}" \
             -X POST \
             -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             --data "${PAYLOAD}" \
-            "${RELEASES_API_URL}?action=create"
+            "${RELEASES_API_URL}?action=create")"
+          RESPONSE="$(cat "${RESPONSE_FILE}")"
+          rm -f "${RESPONSE_FILE}"
+          if [[ "${HTTP_STATUS}" != "200" && "${HTTP_STATUS}" != "201" ]]; then
+            echo "Backend metadata publish failed with HTTP ${HTTP_STATUS}" >&2
+            echo "${RESPONSE}" >&2
+            exit 1
+          fi
