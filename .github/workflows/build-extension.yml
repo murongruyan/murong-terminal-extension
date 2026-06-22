@@ -224,12 +224,28 @@ jobs:
           DEPLOY_KEY: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
         run: |
           set -euo pipefail
+          if [[ -z "${DEPLOY_HOST:-}" || -z "${DEPLOY_PORT:-}" || -z "${DEPLOY_KEY:-}" ]]; then
+            echo "Missing deploy SSH secret: host/port/key" >&2
+            exit 1
+          fi
           mkdir -p "${HOME}/.ssh"
           chmod 700 "${HOME}/.ssh"
-          printf '%s\n' "${DEPLOY_KEY}" > "${HOME}/.ssh/id_ed25519"
+          printf '%s\n' "${DEPLOY_KEY}" | tr -d '\r' > "${HOME}/.ssh/id_ed25519"
           chmod 600 "${HOME}/.ssh/id_ed25519"
+          if ! ssh-keygen -y -f "${HOME}/.ssh/id_ed25519" >/dev/null 2>&1; then
+            echo "Invalid deploy private key format." >&2
+            exit 1
+          fi
           touch "${HOME}/.ssh/known_hosts"
-          ssh-keyscan -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" >> "${HOME}/.ssh/known_hosts"
+          if ! ssh-keyscan -T 15 -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" >> "${HOME}/.ssh/known_hosts" 2> "${RUNNER_TEMP}/ssh-keyscan.err"; then
+            echo "ssh-keyscan failed for ${DEPLOY_HOST}:${DEPLOY_PORT}" >&2
+            cat "${RUNNER_TEMP}/ssh-keyscan.err" >&2 || true
+            exit 1
+          fi
+          if [[ ! -s "${HOME}/.ssh/known_hosts" ]]; then
+            echo "ssh-keyscan returned no host keys for ${DEPLOY_HOST}:${DEPLOY_PORT}" >&2
+            exit 1
+          fi
           chmod 644 "${HOME}/.ssh/known_hosts"
 
       - name: Ensure Remote Extension Downloads Directory
