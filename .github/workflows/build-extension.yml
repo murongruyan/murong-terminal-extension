@@ -156,10 +156,12 @@ jobs:
 
       - name: Upload refreshed prebuilt toolchain
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PREBUILT_ARTIFACT_NAME }}
           path: toolchain/prebuilt/arm64-v8a/**
+          retention-days: 1
 
       - name: Build release from bundled toolchain prebuilt
         env:
@@ -195,10 +197,12 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Upload APK
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT_BASENAME }}
           path: dist/${{ env.APK_FILE }}
+          retention-days: 1
 
       - name: Publish GitHub Release
         if: github.event_name == 'workflow_dispatch'
