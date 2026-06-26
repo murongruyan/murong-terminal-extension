@@ -233,6 +233,7 @@ jobs:
             -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
             -H "Accept: application/json" \
             -F "token=${RELEASES_ADMIN_TOKEN}" \
+            -F "artifact=murong-terminal-extension" \
             -F "apk_file=@dist/${APK_FILE};type=application/vnd.android.package-archive" \
             -F "target_name=${APK_FILE}" \
             -F "version=${APP_VERSION_NAME}" \
