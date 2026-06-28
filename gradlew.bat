@@ -21,7 +21,7 @@ if defined LOCALAPPDATA (
 )
 
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
-set DEFAULT_JVM_OPTS=
+set DEFAULT_JVM_OPTS=--enable-native-access=ALL-UNNAMED
 
 @rem Find java.exe
 if defined JAVA_HOME goto findJavaFromJavaHome

@@ -56,6 +56,8 @@ on:
       - ".github/workflows/build-extension.yml"
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  JAVA_VERSION: "26"
   ANDROID_PLATFORM_PACKAGE: "platforms;android-37.0"
   ANDROID_BUILD_TOOLS_VERSION: "37.0.0"
 
@@ -67,11 +69,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Java
+      - name: Set up Java ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ env.JAVA_VERSION }}
+          check-latest: true
 
       - name: Set up Python
         uses: actions/setup-python@v6
