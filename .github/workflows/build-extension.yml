@@ -17,22 +17,22 @@ on:
         default: ""
         type: string
       app_version_name:
-        description: "扩展包版本名，默认读取 app/build.gradle.kts"
+        description: "语义版本名（如 1.2.0），用于展示给用户；留空则读取 app/build.gradle.kts"
         required: false
         default: ""
         type: string
       app_version_code:
-        description: "扩展包版本号，默认读取 app/build.gradle.kts"
+        description: "内部版本号（正整数，如 26070412），Android 用于判断版本新旧，值越大版本越新；留空则读取 app/build.gradle.kts"
         required: false
         default: ""
         type: string
       release_tag:
-        description: "GitHub Release 标签，默认 murong-terminal-extension-v<version>"
+        description: "GitHub Release 标签（如 murong-terminal-extension-v1.2.0）；留空则自动生成"
         required: false
         default: ""
         type: string
       release_name:
-        description: "Release 标题，默认 Murong Terminal Extension <version> (<code>)"
+        description: "Release 标题（如 Murong Terminal Extension 1.2.0 (26070412)）；留空则自动生成"
         required: false
         default: ""
         type: string
