@@ -1,0 +1,10 @@
+/.gradle/
+/.kotlin/
+/build/
+/app/build/
+/local.properties
+/toolchain/prebuilt/
+/toolchain-cache/
+/.dbg/
+__pycache__/
+*.pyc

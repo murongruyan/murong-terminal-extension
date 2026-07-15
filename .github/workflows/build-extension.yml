@@ -1,0 +1,330 @@
+name: 构建终端扩展包
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_toolchain:
+        description: "构建前是否刷新内置工具链预构建产物"
+        required: false
+        default: false
+        type: boolean
+      toolchain_version:
+        description: "内置工具链版本标签"
+        required: false
+        default: ""
+        type: string
+      app_version_name:
+        description: "扩展包版本名，默认读取 app/build.gradle.kts"
+        required: false
+        default: ""
+        type: string
+      app_version_code:
+        description: "扩展包版本号，默认读取 app/build.gradle.kts"
+        required: false
+        default: ""
+        type: string
+      release_tag:
+        description: "GitHub Release 标签，默认 murong-terminal-extension-v<version>"
+        required: false
+        default: ""
+        type: string
+      release_name:
+        description: "Release 标题，默认 Murong Terminal Extension <version> (<code>)"
+        required: false
+        default: ""
+        type: string
+      sync_to_server:
+        description: "是否通过后端 API 上传扩展包并回写版本信息"
+        required: false
+        default: true
+        type: boolean
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "gradle/**"
+      - "gradlew"
+      - "gradlew.bat"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "scripts/**"
+      - "toolchain/**"
+      - ".github/workflows/build-extension.yml"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  JAVA_VERSION: "26"
+  ANDROID_PLATFORM_PACKAGE: "platforms;android-37.0"
+  ANDROID_BUILD_TOOLS_VERSION: "37.0.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          check-latest: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set Up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android Packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "${ANDROID_PLATFORM_PACKAGE}" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}"
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Prepare release metadata
+        shell: bash
+        env:
+          INPUT_TOOLCHAIN_VERSION: ${{ github.event.inputs.toolchain_version }}
+          INPUT_APP_VERSION_NAME: ${{ github.event.inputs.app_version_name }}
+          INPUT_APP_VERSION_CODE: ${{ github.event.inputs.app_version_code }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_RELEASE_NAME: ${{ github.event.inputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          read_gradle_default() {
+            local key="$1"
+            python3 -c 'import pathlib,re,sys; key=sys.argv[1]; text=pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8"); patterns={"versionName":[r"val\s+appVersionName\s*=.*?\?:\s*\"([^\"]+)\"", r"versionName\s*=\s*\"([^\"]+)\""], "versionCode":[r"val\s+appVersionCode\s*=.*?\?:\s*([0-9]+)", r"versionCode\s*=\s*([0-9]+)"]}; match=next((m for pattern in patterns[key] for m in [re.search(pattern, text, re.S)] if m), None); print(match.group(1)) if match else (print(f"Failed to read default {key}", file=sys.stderr), sys.exit(1))' "${key}"
+          }
+
+          DEFAULT_APP_VERSION_NAME="$(read_gradle_default versionName)"
+          DEFAULT_APP_VERSION_CODE="$(read_gradle_default versionCode)"
+
+          TOOLCHAIN_VERSION="${INPUT_TOOLCHAIN_VERSION:-}"
+          if [[ -z "${TOOLCHAIN_VERSION}" ]]; then
+            TOOLCHAIN_VERSION="termux-curated-${{ github.run_number }}"
+          fi
+
+          APP_VERSION_NAME="${INPUT_APP_VERSION_NAME:-${DEFAULT_APP_VERSION_NAME}}"
+          APP_VERSION_CODE="${INPUT_APP_VERSION_CODE:-${DEFAULT_APP_VERSION_CODE}}"
+
+          if [[ -z "${APP_VERSION_NAME}" || -z "${APP_VERSION_CODE}" ]]; then
+            echo "Missing terminal extension version metadata." >&2
+            exit 1
+          fi
+
+          if [[ ! "${APP_VERSION_CODE}" =~ ^[0-9]+$ ]]; then
+            echo "Invalid app version code: ${APP_VERSION_CODE}" >&2
+            exit 1
+          fi
+
+          RELEASE_TAG="${INPUT_RELEASE_TAG:-murong-terminal-extension-v${APP_VERSION_NAME}}"
+          RELEASE_NAME="${INPUT_RELEASE_NAME:-Murong Terminal Extension ${APP_VERSION_NAME} (${APP_VERSION_CODE})}"
+          ARTIFACT_BASENAME="murong-terminal-extension-${APP_VERSION_NAME}-${APP_VERSION_CODE}-arm64-v8a"
+          APK_FILE="${ARTIFACT_BASENAME}.apk"
+          PREBUILT_ARTIFACT_NAME="murong-terminal-extension-prebuilt-${TOOLCHAIN_VERSION}-arm64-v8a"
+
+          {
+            echo "TOOLCHAIN_VERSION=${TOOLCHAIN_VERSION}"
+            echo "APP_VERSION_NAME=${APP_VERSION_NAME}"
+            echo "APP_VERSION_CODE=${APP_VERSION_CODE}"
+            echo "RELEASE_TAG=${RELEASE_TAG}"
+            echo "RELEASE_NAME=${RELEASE_NAME}"
+            echo "ARTIFACT_BASENAME=${ARTIFACT_BASENAME}"
+            echo "APK_FILE=${APK_FILE}"
+            echo "PREBUILT_ARTIFACT_NAME=${PREBUILT_ARTIFACT_NAME}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Refresh bundled toolchain prebuilt
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
+        run: |
+          ./gradlew --no-configuration-cache \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_TIMEOUT=60 \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_RETRIES=4 \
+            :app:refreshBundledToolchainPrebuilt
+
+      - name: Upload refreshed prebuilt toolchain
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_toolchain }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PREBUILT_ARTIFACT_NAME }}
+          path: toolchain/prebuilt/arm64-v8a/**
+          retention-days: 1
+
+      - name: Build release from bundled toolchain prebuilt
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          GRADLE_ARGS=(
+            "-PBUNDLED_TOOLCHAIN_VERSION=${TOOLCHAIN_VERSION}"
+            "-PAPP_VERSION_NAME=${APP_VERSION_NAME}"
+            "-PAPP_VERSION_CODE=${APP_VERSION_CODE}"
+          )
+          ./gradlew --no-configuration-cache \
+            "${GRADLE_ARGS[@]}" \
+            :app:assembleRelease
+
+      - name: Rename release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk "dist/${APK_FILE}"
+
+      - name: Collect Release Artifact Metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_SHA256="$(sha256sum "dist/${APK_FILE}" | awk '{print $1}')"
+          APK_SIZE_BYTES="$(stat -c%s "dist/${APK_FILE}")"
+          {
+            echo "APK_SHA256=${APK_SHA256}"
+            echo "APK_SIZE_BYTES=${APK_SIZE_BYTES}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Upload APK
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT_BASENAME }}
+          path: dist/${{ env.APK_FILE }}
+          retention-days: 1
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: dist/${{ env.APK_FILE }}
+          makeLatest: true
+          name: ${{ env.RELEASE_NAME }}
+          removeArtifacts: true
+          replacesArtifacts: true
+          tag: ${{ env.RELEASE_TAG }}
+
+      - name: Upload APK To Murong Backend
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
+        shell: bash
+        env:
+          RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
+          RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASES_ADMIN_TOKEN:-}" ]]; then
+            echo "Missing secret: MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2
+            exit 1
+          fi
+          RESPONSE_FILE="$(mktemp)"
+          HTTP_STATUS="$(curl --silent --show-error \
+            --output "${RESPONSE_FILE}" \
+            --write-out "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H "Accept: application/json" \
+            -F "token=${RELEASES_ADMIN_TOKEN}" \
+            -F "artifact=murong-terminal-extension" \
+            -F "apk_file=@dist/${APK_FILE};type=application/vnd.android.package-archive" \
+            -F "target_name=${APK_FILE}" \
+            -F "version=${APP_VERSION_NAME}" \
+            -F "version_code=${APP_VERSION_CODE}" \
+            "${RELEASES_API_URL}?action=upload")"
+          RESPONSE="$(cat "${RESPONSE_FILE}")"
+          rm -f "${RESPONSE_FILE}"
+          if [[ "${HTTP_STATUS}" != "200" && "${HTTP_STATUS}" != "201" ]]; then
+            echo "Backend upload failed with HTTP ${HTTP_STATUS}" >&2
+            echo "${RESPONSE}" >&2
+            exit 1
+          fi
+          UPLOAD_RESPONSE="${RESPONSE}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          response = json.loads(os.environ["UPLOAD_RESPONSE"])
+          if not response.get("success"):
+              raise SystemExit(response.get("message", "upload failed"))
+          data = response.get("data") or {}
+          download_url = data.get("downloadUrl", "").strip()
+          if not download_url:
+              raise SystemExit("upload response missing downloadUrl")
+          env_path = Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as handle:
+              handle.write(f"DOWNLOAD_URL={download_url}\n")
+              if data.get("fileName"):
+                  handle.write(f"APK_FILE={data['fileName']}\n")
+              if data.get("checksumSha256"):
+                  handle.write(f"APK_SHA256={data['checksumSha256']}\n")
+              if data.get("fileSize") is not None:
+                  handle.write(f"APK_SIZE_BYTES={int(data['fileSize'])}\n")
+          PY
+
+      - name: Publish Release Metadata To Murong Backend
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
+        shell: bash
+        env:
+          RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
+          RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASES_ADMIN_TOKEN}" ]]; then
+            echo "Missing secret: MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2
+            exit 1
+          fi
+
+          PAYLOAD="$(python3 - <<'PY'
+          import json
+          import os
+
+          print(json.dumps({
+              "token": os.environ["RELEASES_ADMIN_TOKEN"],
+              "artifactKey": "murong-terminal-extension",
+              "channel": "stable",
+              "versionName": os.environ["APP_VERSION_NAME"],
+              "versionCode": int(os.environ["APP_VERSION_CODE"]),
+              "fileName": os.environ["APK_FILE"],
+              "downloadUrl": os.environ["DOWNLOAD_URL"],
+              "checksumSha256": os.environ["APK_SHA256"],
+              "changelog": os.environ["RELEASE_NAME"],
+              "updateMessage": f"终端扩展包 {os.environ['APP_VERSION_NAME']} 已可下载。",
+              "fileSize": int(os.environ["APK_SIZE_BYTES"]),
+              "status": "active"
+          }, ensure_ascii=False))
+          PY
+          )"
+
+          RESPONSE_FILE="$(mktemp)"
+          HTTP_STATUS="$(curl --silent --show-error \
+            --output "${RESPONSE_FILE}" \
+            --write-out "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            --data "${PAYLOAD}" \
+            "${RELEASES_API_URL}?action=create")"
+          RESPONSE="$(cat "${RESPONSE_FILE}")"
+          rm -f "${RESPONSE_FILE}"
+          if [[ "${HTTP_STATUS}" != "200" && "${HTTP_STATUS}" != "201" ]]; then
+            echo "Backend metadata publish failed with HTTP ${HTTP_STATUS}" >&2
+            echo "${RESPONSE}" >&2
+            exit 1
+          fi
