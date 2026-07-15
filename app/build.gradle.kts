@@ -239,6 +239,7 @@ fun generateBundledToolchainAssets(
         },
         "links" to layout.symlinks
             .filterNot { it.path.startsWith("bin/") }
+            .filterNot { it.target.startsWith("/") }
             .map { link ->
                 linkedMapOf(
                     "path" to link.path,
