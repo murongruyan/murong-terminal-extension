@@ -181,6 +181,62 @@ jobs:
             "${GRADLE_ARGS[@]}" \
             :app:assembleRelease
 
+      - name: Verify packaged toolchain manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import zipfile
+
+          apks = sorted(pathlib.Path("app/build/outputs/apk/release").glob("*.apk"))
+          if len(apks) != 1:
+              raise SystemExit(f"Expected one release APK, found {len(apks)}")
+
+          asset_path = "assets/toolchain/arm64-v8a/manifest.json"
+          with zipfile.ZipFile(apks[0]) as apk:
+              manifest = json.loads(apk.read(asset_path))
+              apk_entries = set(apk.namelist())
+
+          absolute_links = [
+              link for link in manifest.get("links", [])
+              if str(link.get("target", "")).startswith("/")
+          ]
+          if absolute_links:
+              paths = ", ".join(link.get("path", "<unknown>") for link in absolute_links)
+              raise SystemExit(
+                  f"Packaged toolchain manifest contains {len(absolute_links)} "
+                  f"absolute-target links: {paths}"
+              )
+
+          packaged_paths = {
+              item.get("path") or item.get("asset")
+              for item in manifest.get("files", [])
+          }
+          packaged_paths.update(
+              link.get("path") for link in manifest.get("links", [])
+          )
+          missing_command_targets = []
+          for command, target in manifest.get("commands", {}).items():
+              if target.startswith("native/"):
+                  apk_target = f"lib/arm64-v8a/{target.removeprefix('native/')}"
+                  if apk_target not in apk_entries:
+                      missing_command_targets.append((command, target))
+              elif target not in packaged_paths:
+                  missing_command_targets.append((command, target))
+          if missing_command_targets:
+              raise SystemExit(
+                  "Packaged toolchain manifest contains missing command targets: "
+                  f"{missing_command_targets}"
+              )
+
+          print(
+              f"Verified {apks[0]}: {len(manifest.get('files', []))} files, "
+              f"{len(manifest.get('links', []))} relative links"
+          )
+          PY
+
       - name: Rename release package
         shell: bash
         run: |

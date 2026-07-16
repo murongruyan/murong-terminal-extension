@@ -3,6 +3,7 @@ import argparse
 import bz2
 import fnmatch
 import gzip
+import hashlib
 import io
 import json
 import lzma
@@ -322,15 +323,17 @@ def extract_package(deb_path, root_prefix, exclude_globs, output_root):
     mode = "r:*"
     symlink_jobs = []
     executable_paths = set()
+    installed_paths = set()
     with tarfile.open(fileobj=io.BytesIO(data_bytes), mode=mode) as tar:
         for entry in tar.getmembers():
-            if not (entry.isfile() or entry.issym() or entry.islnk()):
-                continue
             normalized = entry.name.lstrip("./")
             if not normalized.startswith(root_prefix):
                 continue
-            relative = normalized[len(root_prefix):]
+            relative = normalized[len(root_prefix):].rstrip("/")
             if not relative or should_exclude(relative, exclude_globs):
+                continue
+            installed_paths.add("/" + root_prefix.rstrip("/") + "/" + relative)
+            if not (entry.isfile() or entry.issym() or entry.islnk()):
                 continue
             if entry.isfile():
                 extracted = tar.extractfile(entry)
@@ -355,7 +358,132 @@ def extract_package(deb_path, root_prefix, exclude_globs, output_root):
                     symlink_jobs,
                     executable_paths,
                 )
-    return symlink_jobs, executable_paths
+    return symlink_jobs, executable_paths, installed_paths
+
+
+def extract_control_metadata(deb_path, package_name, output_root):
+    _, control_bytes = read_ar_member(deb_path, "control.tar")
+    info_dir = os.path.join(output_root, "var", "lib", "dpkg", "info")
+    ensure_dir(info_dir)
+    executable_paths = set()
+    supported_members = {
+        "conffiles",
+        "config",
+        "md5sums",
+        "postinst",
+        "postrm",
+        "preinst",
+        "prerm",
+        "shlibs",
+        "symbols",
+        "templates",
+        "triggers",
+    }
+    with tarfile.open(fileobj=io.BytesIO(control_bytes), mode="r:*") as tar:
+        for entry in tar.getmembers():
+            member_name = pathlib.PurePosixPath(entry.name.lstrip("./")).name
+            if not entry.isfile() or member_name not in supported_members:
+                continue
+            source = tar.extractfile(entry)
+            if source is None:
+                continue
+            relative = f"var/lib/dpkg/info/{package_name}.{member_name}"
+            output_path = os.path.join(output_root, relative)
+            with open(output_path, "wb") as target:
+                shutil.copyfileobj(source, target)
+            executable = bool(entry.mode & 0o111)
+            os.chmod(output_path, 0o755 if executable else 0o644)
+            if executable:
+                executable_paths.add(relative)
+    return executable_paths
+
+
+def write_dpkg_database(output_root, resolved, package_index, package_files):
+    dpkg_dir = os.path.join(output_root, "var", "lib", "dpkg")
+    info_dir = os.path.join(dpkg_dir, "info")
+    ensure_dir(info_dir)
+    status_fields = (
+        "Package",
+        "Status",
+        "Priority",
+        "Section",
+        "Installed-Size",
+        "Maintainer",
+        "Architecture",
+        "Multi-Arch",
+        "Source",
+        "Version",
+        "Replaces",
+        "Provides",
+        "Pre-Depends",
+        "Depends",
+        "Recommends",
+        "Suggests",
+        "Conflicts",
+        "Breaks",
+        "Essential",
+        "Description",
+        "Homepage",
+    )
+    stanzas = []
+    for package_name in resolved:
+        metadata = dict(package_index[package_name])
+        metadata["Status"] = "install ok installed"
+        stanza = []
+        for field in status_fields:
+            value = metadata.get(field, "")
+            if value:
+                stanza.append(f"{field}: {value}")
+        stanzas.append("\n".join(stanza))
+        list_path = os.path.join(info_dir, f"{package_name}.list")
+        with open(list_path, "w", encoding="utf-8", newline="\n") as handle:
+            for installed_path in sorted(package_files.get(package_name, set())):
+                handle.write(installed_path + "\n")
+    status_text = "\n\n".join(stanzas) + "\n"
+    with open(os.path.join(dpkg_dir, "status"), "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(status_text)
+    with open(os.path.join(dpkg_dir, "available"), "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("")
+
+
+def write_dpkg_md5sums(output_root, root_prefix, package_files):
+    info_dir = os.path.join(output_root, "var", "lib", "dpkg", "info")
+    prefix = root_prefix.rstrip("/") + "/"
+    for package_name, installed_paths in package_files.items():
+        entries = []
+        for installed_path in sorted(installed_paths):
+            archive_path = installed_path.lstrip("/")
+            if not archive_path.startswith(prefix):
+                continue
+            relative = archive_path[len(prefix):]
+            target = os.path.join(output_root, relative)
+            if not os.path.isfile(target) or os.path.islink(target):
+                continue
+            digest = hashlib.md5()
+            with open(target, "rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            entries.append(f"{digest.hexdigest()}  {archive_path}")
+        md5sums_path = os.path.join(info_dir, f"{package_name}.md5sums")
+        with open(md5sums_path, "w", encoding="utf-8", newline="\n") as handle:
+            if entries:
+                handle.write("\n".join(entries) + "\n")
+
+
+def write_runtime_scaffold(output_root):
+    placeholder_paths = (
+        "etc/apt/apt.conf.d/00murong",
+        "etc/apt/preferences.d/00murong",
+        "tmp/.murong-keep",
+        "var/cache/apt/archives/partial/.murong-keep",
+        "var/lib/apt/lists/partial/.murong-keep",
+        "var/lib/dpkg/updates/.murong-keep",
+        "var/log/apt/.murong-keep",
+    )
+    for relative in placeholder_paths:
+        target = os.path.join(output_root, relative)
+        ensure_dir(os.path.dirname(target))
+        pathlib.Path(target).touch()
 
 
 def write_metadata(output_root, abi, top_level, resolved, package_index):
@@ -436,6 +564,7 @@ def main():
 
     all_symlink_jobs = []
     all_executable_paths = set()
+    package_files = {}
 
     for idx, package_name in enumerate(resolved_packages, 1):
         print(f"[{idx}/{len(resolved_packages)} {package_name}")
@@ -466,7 +595,14 @@ def main():
             {"package_name": package_name, "deb_path": deb_path},
         )
         # #endregion
-        symlink_jobs, executable_paths = extract_package(deb_path, root_prefix, exclude_globs, output_root)
+        symlink_jobs, executable_paths, installed_paths = extract_package(
+            deb_path,
+            root_prefix,
+            exclude_globs,
+            output_root,
+        )
+        executable_paths.update(extract_control_metadata(deb_path, package_name, output_root))
+        package_files[package_name] = installed_paths
         all_symlink_jobs.extend(symlink_jobs)
         all_executable_paths.update(executable_paths)
         # #region debug-point E:extract-done
@@ -478,6 +614,9 @@ def main():
         )
         # #endregion
 
+    write_dpkg_database(output_root, resolved_packages, package_index, package_files)
+    write_dpkg_md5sums(output_root, root_prefix, package_files)
+    write_runtime_scaffold(output_root)
     write_layout_metadata(output_root, all_symlink_jobs, all_executable_paths)
     write_metadata(output_root, args.abi, config["topLevelPackages"], resolved_packages, package_index)
     # #region debug-point A:main-done

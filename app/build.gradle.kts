@@ -20,16 +20,16 @@ val localProperties = Properties().apply {
 
 val appVersionName = (findProperty("APP_VERSION_NAME") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "1.3"
+    ?: "1.6"
 val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?.toIntOrNull()
-    ?: 26071513
+    ?: 26071616
 val bundledToolchainAbi = (findProperty("BUNDLED_TOOLCHAIN_ABI") as String?)
     ?.takeIf { it.isNotBlank() }
     ?: "arm64-v8a"
 val bundledToolchainVersion = (findProperty("BUNDLED_TOOLCHAIN_VERSION") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "termux-curated-v2"
+    ?: "termux-curated-v5"
 val bundledToolchainDownloadEnabled = ((findProperty("BUNDLED_TOOLCHAIN_ENABLE_DOWNLOAD") as String?)
     ?: System.getenv("BUNDLED_TOOLCHAIN_ENABLE_DOWNLOAD"))
     ?.toBooleanStrictOrNull()
@@ -47,6 +47,9 @@ val generatedToolchainSourceDir = layout.buildDirectory.dir("generated/toolchain
 val generatedToolchainAssetsDir = layout.buildDirectory.dir("generated/assets/toolchain")
 val generatedToolchainJniLibsDir = layout.buildDirectory.dir("generated/jnilibs/toolchain")
 val bundledToolchainPrebuiltRoot = rootProject.layout.projectDirectory.dir("toolchain/prebuilt/$bundledToolchainAbi").asFile
+val bundledNativeRuntimeCommands = linkedMapOf(
+    "proot-loader" to "libexec/proot/loader"
+)
 
 fun computeBundledCommandInstallName(commandName: String): String {
     val encoded = Base64.getUrlEncoder()
@@ -87,12 +90,19 @@ fun readBundledToolchainLayout(sourceRoot: File): BundledToolchainLayout {
 }
 
 fun resolveBundledToolchainRelative(path: String, target: String): String {
-    val normalizedTarget = target
-        .replace('\\', '/')
-        .removePrefix("/")
+    val normalizedTarget = target.replace('\\', '/')
+    val absoluteBundledPrefix = "/$bundledToolchainRootPrefix"
+    if (normalizedTarget.startsWith(absoluteBundledPrefix)) {
+        return Paths.get(normalizedTarget.removePrefix(absoluteBundledPrefix))
+            .normalize()
+            .toString()
+            .replace('\\', '/')
+    }
+    val relativeTarget = normalizedTarget
         .removePrefix(bundledToolchainRootPrefix)
+        .removePrefix("/")
     val parent = Paths.get(path).parent
-    val resolved = (parent ?: Paths.get("")).resolve(normalizedTarget).normalize()
+    val resolved = (parent ?: Paths.get("")).resolve(relativeTarget).normalize()
     return resolved.toString().replace('\\', '/')
 }
 
@@ -182,6 +192,14 @@ fun generateBundledToolchainAssets(
     abiDir.mkdirs()
 
     allFilesByRelative.forEach { (relative, source) ->
+        val nativeRuntimeCommand = bundledNativeRuntimeCommands.entries
+            .firstOrNull { it.value == relative && isElfExecutable(source) }
+            ?.key
+        if (nativeRuntimeCommand != null) {
+            commandMappings[nativeRuntimeCommand] =
+                "native/${computeBundledCommandInstallName(nativeRuntimeCommand)}"
+            return@forEach
+        }
         if (relative.startsWith("bin/") && isElfExecutable(source)) {
             val commandName = source.name
             val canonicalRelative = duplicateTargets[relative] ?: relative
@@ -224,9 +242,31 @@ fun generateBundledToolchainAssets(
 
     val assetFiles = allFilesByRelative.keys
         .filterNot { it.startsWith("bin/") && isElfExecutable(allFilesByRelative.getValue(it)) }
+        .filterNot { relative -> bundledNativeRuntimeCommands.values.contains(relative) }
         .filterNot { it in deduplicatedLinks.keys }
         .filterNot { it == "metadata/toolchain-layout.json" }
         .sorted()
+    val manifestLinks = layout.symlinks
+        .filterNot { it.path.startsWith("bin/") }
+        .map { link ->
+            val resolvedTarget = resolveBundledToolchainRelative(link.path, link.target)
+            linkedMapOf(
+                "path" to link.path,
+                "target" to buildBundledToolchainRelativeLink(link.path, resolvedTarget)
+            )
+        } + deduplicatedLinks.entries.sortedBy { it.key }.map { (path, target) ->
+            linkedMapOf(
+                "path" to path,
+                "target" to target
+            )
+        }
+    val packagedRelativePaths = assetFiles.toSet() + manifestLinks.map { it.getValue("path") }
+    val missingRelativeCommandTargets = commandMappings.filter { (_, path) ->
+        !path.startsWith("native/") && path !in packagedRelativePaths
+    }
+    check(missingRelativeCommandTargets.isEmpty()) {
+        "Toolchain command targets are missing from packaged assets: $missingRelativeCommandTargets"
+    }
     val manifestPayload = linkedMapOf<String, Any>(
         "version" to version,
         "abi" to abi,
@@ -237,20 +277,7 @@ fun generateBundledToolchainAssets(
                 "executable" to (relativePath in layout.executables)
             )
         },
-        "links" to layout.symlinks
-            .filterNot { it.path.startsWith("bin/") }
-            .filterNot { it.target.startsWith("/") }
-            .map { link ->
-                linkedMapOf(
-                    "path" to link.path,
-                    "target" to link.target
-                )
-            } + deduplicatedLinks.entries.sortedBy { it.key }.map { (path, target) ->
-                linkedMapOf(
-                    "path" to path,
-                    "target" to target
-                )
-            },
+        "links" to manifestLinks,
         "commands" to commandMappings
     )
 
@@ -283,6 +310,17 @@ fun generateBundledToolchainJniLibs(
             return@forEach
         }
         val target = File(abiDir, computeBundledCommandInstallName(source.name))
+        source.copyTo(target, overwrite = true)
+        target.setExecutable(true, false)
+        target.setReadable(true, false)
+    }
+
+    bundledNativeRuntimeCommands.forEach { (commandName, relativePath) ->
+        val source = File(sourceRoot, relativePath)
+        check(isElfExecutable(source)) {
+            "Bundled native runtime command '$commandName' is missing ELF source '$relativePath'"
+        }
+        val target = File(abiDir, computeBundledCommandInstallName(commandName))
         source.copyTo(target, overwrite = true)
         target.setExecutable(true, false)
         target.setReadable(true, false)

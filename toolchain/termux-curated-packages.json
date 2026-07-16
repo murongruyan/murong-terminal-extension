@@ -33,6 +33,7 @@
     "gpgv",
     "openssl-tool",
     "procps",
+    "proot",
     "ripgrep",
     "sed",
     "tar",
