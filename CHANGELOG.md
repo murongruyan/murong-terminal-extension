@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.10 / 26071720 — 2026-07-17
+
+### Fixed
+- **GitHub 发布包缺少 Codex**: Release 工作流现在与本地构建走同一条完整工具链路径，并在打包后验证 `codex-app-server` 的命令入口、ARM64 ELF、固定来源元数据和 Apache-2.0 许可证；缺任一项即失败，不能发布。
+- **升级可识别**: 默认版本号提升，主应用会因新的工具链指纹重新解包命令入口，不会继续复用旧扩展的无 Codex 工具链。
+
+## 1.7 / 26071617 — 2026-07-16
+
+### Added
+- **官方 Codex app-server**: 固定打包 OpenAI `rust-v0.144.5` 的 ARM64 musl dedicated app-server，命令名为 `codex-app-server`，并对下载归档执行固定 SHA256、ELF64 与 AArch64 校验。
+- **可审计许可证**: APK 工具链随包携带 Codex app-server 的 Apache-2.0 许可证和固定来源元数据。
+
+### Fixed
+- **普通 push 不再产出 placeholder 工具链**: GitHub Workflow 明确启用完整工具链同步，并在最终 APK manifest 中强制校验 `apt`、`bash`、`pkg`、`proot` 与 `codex-app-server` 等命令及其实际载荷。
+
+### Changed
+- 工具链指纹更新为 `termux-curated-v6-codex-app-server-0.144.5`，确保已安装的旧工具链会重新解包新增命令。
+
 ## 1.6 / 26071616 — 2026-07-16
 
 ### Fixed

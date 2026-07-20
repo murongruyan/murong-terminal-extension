@@ -22,8 +22,17 @@ Headless Android companion package for `Murong Agent`.
 - No icon entry.
 - Metadata provider authority: `cc.rl1.murong.terminalextension.metadata`
 - Toolchain staging script: `scripts/sync_toolchain.py`
+- Pinned Codex app-server merge script: `scripts/sync_codex_app_server.py`
 - Curated Termux package list: `toolchain/termux-curated-packages.json`
 - GitHub Actions workflow: `.github/workflows/build-extension.yml`
+
+The extension packages the official OpenAI `codex-app-server` ARM64 musl release as
+`bin/codex-app-server`. It is a dedicated app-server executable, not the full `codex`
+CLI. The source is pinned reproducibly to:
+
+- Tag: `rust-v0.144.5`
+- Asset: `codex-app-server-aarch64-unknown-linux-musl.tar.gz`
+- SHA256: `d2230513fcbe363e6230a4cb53917fafd68c2d2bad953035d99059eb18c07117`
 
 ## Build
 
@@ -63,8 +72,13 @@ After refresh completes, build again with the normal release command.
 
 The workflow now supports two modes:
 
-- Default: build from the checked-in/local prebuilt toolchain.
+- Push/default: synchronize and package a real complete toolchain; placeholder output is
+  rejected by the APK manifest verification step.
 - Manual refresh: trigger `workflow_dispatch` with `refresh_toolchain=true`, then the workflow refreshes `toolchain/prebuilt/<abi>` first and packages the release APK from that result.
+
+Both paths verify that the final APK manifest contains `codex-app-server`, that its
+native payload is an ELF64 little-endian AArch64 executable, and that the pinned source
+metadata and Apache-2.0 license are packaged.
 
 Workflow dispatch inputs:
 
@@ -84,4 +98,12 @@ Required secrets:
 2. Verify locally with `:app:assembleRelease` or `:app:installRelease`.
 3. Bump the extension version label, then publish the new APK.
 
-This keeps normal builds fast and makes toolchain updates explicit instead of re-downloading everything on every build.
+This keeps local builds with a refreshed prebuilt fast, while CI push builds prioritize
+completeness and reproducibility by synchronizing the pinned inputs.
+
+## Third-party license
+
+The bundled OpenAI Codex app-server is distributed under Apache-2.0. See
+`THIRD_PARTY_NOTICES.md` and `third_party/codex-app-server/LICENSE`; the license is also
+included inside the generated toolchain at
+`share/LICENSES/codex-app-server/LICENSE`.

@@ -12,24 +12,32 @@ plugins {
 }
 
 val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) {
-        file.inputStream().use(::load)
+    // A sibling Murong Agent checkout can supply the local release-keystore
+    // values without copying credentials into this extension repository. The
+    // extension-local file is loaded last so a developer can still override
+    // values explicitly; CI continues to use its injected secrets.
+    listOf(
+        rootProject.file("../murongagent/local.properties"),
+        rootProject.file("local.properties")
+    ).forEach { file ->
+        if (file.exists()) {
+            file.inputStream().use(::load)
+        }
     }
 }
 
 val appVersionName = (findProperty("APP_VERSION_NAME") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "1.6"
+    ?: "1.10"
 val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?.toIntOrNull()
-    ?: 26071616
+    ?: 26071720
 val bundledToolchainAbi = (findProperty("BUNDLED_TOOLCHAIN_ABI") as String?)
     ?.takeIf { it.isNotBlank() }
     ?: "arm64-v8a"
 val bundledToolchainVersion = (findProperty("BUNDLED_TOOLCHAIN_VERSION") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "termux-curated-v5"
+    ?: "termux-curated-v6-codex-app-server-0.144.5"
 val bundledToolchainDownloadEnabled = ((findProperty("BUNDLED_TOOLCHAIN_ENABLE_DOWNLOAD") as String?)
     ?: System.getenv("BUNDLED_TOOLCHAIN_ENABLE_DOWNLOAD"))
     ?.toBooleanStrictOrNull()
@@ -347,9 +355,15 @@ fun runForegroundProcess(command: List<String>, workingDirectory: File, failureM
 }
 
 val prepareBundledToolchainSource = tasks.register("prepareBundledToolchainSource") {
+    notCompatibleWithConfigurationCache(
+        "The toolchain source task launches verified external synchronizers and owns mutable cache directories."
+    )
     val outputRoot = generatedToolchainSourceDir.get().asFile
     val prebuiltRoot = bundledToolchainPrebuiltRoot
     val scriptFile = rootProject.layout.projectDirectory.file("scripts/sync_toolchain.py").asFile
+    val codexScriptFile = rootProject.layout.projectDirectory.file("scripts/sync_codex_app_server.py").asFile
+    val codexLicenseFile = rootProject.layout.projectDirectory.file("third_party/codex-app-server/LICENSE").asFile
+    val codexCacheDir = rootProject.layout.projectDirectory.dir("toolchain-cache/codex").asFile
     val configFile = rootProject.layout.projectDirectory.file("toolchain/termux-curated-packages.json").asFile
     outputs.dir(outputRoot)
     inputs.property("abi", bundledToolchainAbi)
@@ -358,46 +372,71 @@ val prepareBundledToolchainSource = tasks.register("prepareBundledToolchainSourc
     inputs.property("downloadTimeout", bundledToolchainDownloadTimeout)
     inputs.property("downloadRetries", bundledToolchainDownloadRetries)
     inputs.file(scriptFile)
+    inputs.file(codexScriptFile)
+    inputs.file(codexLicenseFile)
     inputs.file(configFile)
     doLast {
         outputRoot.deleteRecursively()
-        if (prebuiltRoot.exists()) {
-            prebuiltRoot.copyRecursively(outputRoot, overwrite = true)
-            return@doLast
-        }
-        if (!bundledToolchainDownloadEnabled) {
-            preparePlaceholderToolchain(outputRoot)
-            return@doLast
-        }
         val pythonCommand = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
             listOf("py", "-3")
         } else {
             listOf("python3")
         }
+        if (prebuiltRoot.exists()) {
+            prebuiltRoot.copyRecursively(outputRoot, overwrite = true)
+        } else if (!bundledToolchainDownloadEnabled) {
+            preparePlaceholderToolchain(outputRoot)
+            return@doLast
+        } else {
+            runForegroundProcess(
+                pythonCommand +
+                    listOf(
+                        scriptFile.absolutePath,
+                        "--config", configFile.absolutePath,
+                        "--output", outputRoot.absolutePath,
+                        "--abi", bundledToolchainAbi,
+                        "--timeout", bundledToolchainDownloadTimeout.toString(),
+                        "--retries", bundledToolchainDownloadRetries.toString()
+                    ),
+                rootProject.projectDir,
+                "Toolchain sync script failed"
+            )
+        }
+        check(bundledToolchainAbi == "arm64-v8a") {
+            "Pinned Codex app-server supports only arm64-v8a, requested '$bundledToolchainAbi'"
+        }
         runForegroundProcess(
             pythonCommand +
                 listOf(
-                    scriptFile.absolutePath,
-                    "--config", configFile.absolutePath,
+                    codexScriptFile.absolutePath,
                     "--output", outputRoot.absolutePath,
-                    "--abi", bundledToolchainAbi,
+                    "--cache-dir", codexCacheDir.absolutePath,
+                    "--license-file", codexLicenseFile.absolutePath,
                     "--timeout", bundledToolchainDownloadTimeout.toString(),
                     "--retries", bundledToolchainDownloadRetries.toString()
                 ),
             rootProject.projectDir,
-            "Toolchain sync script failed"
+            "Pinned Codex app-server sync failed"
         )
     }
 }
 
 val refreshBundledToolchainPrebuilt = tasks.register("refreshBundledToolchainPrebuilt") {
+    notCompatibleWithConfigurationCache(
+        "Refreshing the prebuilt toolchain invokes external synchronizers and replaces a mutable artifact directory."
+    )
     val outputRoot = bundledToolchainPrebuiltRoot
     val scriptFile = rootProject.layout.projectDirectory.file("scripts/sync_toolchain.py").asFile
+    val codexScriptFile = rootProject.layout.projectDirectory.file("scripts/sync_codex_app_server.py").asFile
+    val codexLicenseFile = rootProject.layout.projectDirectory.file("third_party/codex-app-server/LICENSE").asFile
+    val codexCacheDir = rootProject.layout.projectDirectory.dir("toolchain-cache/codex").asFile
     val configFile = rootProject.layout.projectDirectory.file("toolchain/termux-curated-packages.json").asFile
     inputs.property("abi", bundledToolchainAbi)
     inputs.property("downloadTimeout", bundledToolchainDownloadTimeout)
     inputs.property("downloadRetries", bundledToolchainDownloadRetries)
     inputs.file(scriptFile)
+    inputs.file(codexScriptFile)
+    inputs.file(codexLicenseFile)
     inputs.file(configFile)
     outputs.dir(outputRoot)
     doLast {
@@ -421,10 +460,29 @@ val refreshBundledToolchainPrebuilt = tasks.register("refreshBundledToolchainPre
             rootProject.projectDir,
             "Toolchain prebuilt refresh failed"
         )
+        check(bundledToolchainAbi == "arm64-v8a") {
+            "Pinned Codex app-server supports only arm64-v8a, requested '$bundledToolchainAbi'"
+        }
+        runForegroundProcess(
+            pythonCommand +
+                listOf(
+                    codexScriptFile.absolutePath,
+                    "--output", outputRoot.absolutePath,
+                    "--cache-dir", codexCacheDir.absolutePath,
+                    "--license-file", codexLicenseFile.absolutePath,
+                    "--timeout", bundledToolchainDownloadTimeout.toString(),
+                    "--retries", bundledToolchainDownloadRetries.toString()
+                ),
+            rootProject.projectDir,
+            "Pinned Codex app-server prebuilt merge failed"
+        )
     }
 }
 
 val prepareBundledToolchainAssets = tasks.register("prepareBundledToolchainAssets") {
+    notCompatibleWithConfigurationCache(
+        "Packaging the generated toolchain captures Gradle script helpers that are intentionally not configuration-cache serializable."
+    )
     val sourceRoot = generatedToolchainSourceDir.get().asFile
     val outputRoot = generatedToolchainAssetsDir.get().asFile
     dependsOn(prepareBundledToolchainSource)
@@ -443,6 +501,9 @@ val prepareBundledToolchainAssets = tasks.register("prepareBundledToolchainAsset
 }
 
 val prepareBundledToolchainJniLibs = tasks.register("prepareBundledToolchainJniLibs") {
+    notCompatibleWithConfigurationCache(
+        "Packaging generated native command libraries captures Gradle script helpers that are intentionally not configuration-cache serializable."
+    )
     val sourceRoot = generatedToolchainSourceDir.get().asFile
     val outputRoot = generatedToolchainJniLibsDir.get().asFile
     dependsOn(prepareBundledToolchainSource)

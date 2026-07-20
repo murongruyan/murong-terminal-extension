@@ -166,7 +166,7 @@ jobs:
           path: toolchain/prebuilt/arm64-v8a/**
           retention-days: 1
 
-      - name: Build release from bundled toolchain prebuilt
+      - name: Build release with complete bundled toolchain
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
@@ -174,6 +174,9 @@ jobs:
         run: |
           GRADLE_ARGS=(
             "-PBUNDLED_TOOLCHAIN_VERSION=${TOOLCHAIN_VERSION}"
+            "-PBUNDLED_TOOLCHAIN_ENABLE_DOWNLOAD=true"
+            "-PBUNDLED_TOOLCHAIN_DOWNLOAD_TIMEOUT=60"
+            "-PBUNDLED_TOOLCHAIN_DOWNLOAD_RETRIES=4"
             "-PAPP_VERSION_NAME=${APP_VERSION_NAME}"
             "-PAPP_VERSION_CODE=${APP_VERSION_CODE}"
           )
@@ -188,6 +191,7 @@ jobs:
           python3 - <<'PY'
           import json
           import pathlib
+          import struct
           import zipfile
 
           apks = sorted(pathlib.Path("app/build/outputs/apk/release").glob("*.apk"))
@@ -231,9 +235,72 @@ jobs:
                   f"{missing_command_targets}"
               )
 
+          commands = manifest.get("commands", {})
+          required_commands = {
+              "apt",
+              "bash",
+              "codex-app-server",
+              "dpkg",
+              "pkg",
+              "proot",
+          }
+          missing_commands = sorted(required_commands.difference(commands))
+          if missing_commands:
+              raise SystemExit(
+                  "Packaged toolchain is incomplete; manifest is missing commands: "
+                  f"{missing_commands}"
+              )
+
+          codex_target = commands["codex-app-server"]
+          if not codex_target.startswith("native/"):
+              raise SystemExit(
+                  "codex-app-server must be packaged as a native executable, got "
+                  f"{codex_target!r}"
+              )
+          codex_apk_path = (
+              f"lib/arm64-v8a/{codex_target.removeprefix('native/')}"
+          )
+          codex_metadata_path = (
+              "assets/toolchain/arm64-v8a/metadata/codex-app-server.json"
+          )
+          codex_license_path = (
+              "assets/toolchain/arm64-v8a/share/LICENSES/"
+              "codex-app-server/LICENSE"
+          )
+          with zipfile.ZipFile(apks[0]) as apk:
+              with apk.open(codex_apk_path) as codex_binary:
+                  codex_header = codex_binary.read(64)
+              codex_metadata = json.loads(apk.read(codex_metadata_path))
+              codex_license = apk.read(codex_license_path).decode("utf-8")
+
+          if len(codex_header) < 64 or codex_header[:4] != b"\x7fELF":
+              raise SystemExit("Packaged codex-app-server is not an ELF binary")
+          elf_class = codex_header[4]
+          elf_data = codex_header[5]
+          elf_type, elf_machine = struct.unpack_from("<HH", codex_header, 16)
+          if elf_class != 2 or elf_data != 1 or elf_type not in (2, 3) or elf_machine != 183:
+              raise SystemExit(
+                  "Packaged codex-app-server ELF does not target little-endian "
+                  f"AArch64: class={elf_class}, data={elf_data}, "
+                  f"type={elf_type}, machine={elf_machine}"
+              )
+          if codex_metadata.get("tag") != "rust-v0.144.5":
+              raise SystemExit(f"Unexpected Codex tag metadata: {codex_metadata}")
+          expected_archive_sha256 = (
+              "d2230513fcbe363e6230a4cb53917fafd68c2d2bad953035d99059eb18c07117"
+          )
+          if codex_metadata.get("archiveSha256") != expected_archive_sha256:
+              raise SystemExit(
+                  "Unexpected Codex archive SHA256 metadata: "
+                  f"{codex_metadata.get('archiveSha256')}"
+              )
+          if "Apache License" not in codex_license or "Version 2.0" not in codex_license:
+              raise SystemExit("Packaged Codex Apache-2.0 license is missing or invalid")
+
           print(
               f"Verified {apks[0]}: {len(manifest.get('files', []))} files, "
-              f"{len(manifest.get('links', []))} relative links"
+              f"{len(manifest.get('links', []))} relative links, "
+              "pinned codex-app-server present"
           )
           PY
 
