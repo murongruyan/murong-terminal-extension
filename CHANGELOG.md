@@ -1,10 +1,18 @@
 # Changelog
 
-## 1.10 / 26071720 — 2026-07-17
+## 1.10 / 26071720 — 2026-07-20
+
+### Added
+- **完整可重定位 Termux 环境**: APK 内置 Bash、Git、ripgrep、BusyBox、`apt`、`pkg`、`dpkg`、PRoot、证书与包数据库依赖闭包；主程序解包到私有工具链目录后仍能正确解析命令、相对链接和 Termux 固定前缀。
+- **官方 Codex app-server**: 固定打包并验证 OpenAI `rust-v0.144.5` 的 ARM64 musl app-server，同时携带来源元数据、归档 SHA-256 与 Apache-2.0 License。
 
 ### Fixed
 - **GitHub 发布包缺少 Codex**: Release 工作流现在与本地构建走同一条完整工具链路径，并在打包后验证 `codex-app-server` 的命令入口、ARM64 ELF、固定来源元数据和 Apache-2.0 许可证；缺任一项即失败，不能发布。
 - **升级可识别**: 默认版本号提升，主应用会因新的工具链指纹重新解包命令入口，不会继续复用旧扩展的无 Codex 工具链。
+- **绝对链接与 Root 环境失效**: Termux 固定绝对链接转换为包内相对链接，脚本安装时重写实际 `PREFIX`，原生命令通过 APK 可执行实体加载；扩展 Bash 在主程序取得 Root 后不会因为切换到系统 Shell 而丢失工具链。
+
+### Changed
+- 主仓库的统一 `build-all.yml` 会直接检出扩展 `main` 并与主 APK、六个桌面包和两个云中继包一起构建；最终完整性门禁必须同时获得全部 10 个正式包并通过 SHA-256 校验。
 
 ## 1.7 / 26071617 — 2026-07-16
 
